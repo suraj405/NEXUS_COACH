@@ -1,0 +1,250 @@
+// app.js - FIXED VERSION
+class GymTrainer {
+    constructor() {
+        this.pose = null;
+        this.video = null;
+        this.canvas = null;
+        this.ctx = null;
+        this.isActive = false;
+        this.repCount = 0;
+        this.currentExercise = 'squat';
+        this.lastPosture = null;
+        
+        this.initializeElements();
+        this.initializePose();
+        this.setupEventListeners();
+    }
+
+    initializeElements() {
+        this.video = document.getElementById('inputVideo');
+        this.canvas = document.getElementById('outputCanvas');
+        this.ctx = this.canvas.getContext('2d');
+        
+        // Set canvas size
+        this.canvas.width = 640;
+        this.canvas.height = 480;
+    }
+
+    async initializePose() {
+        this.pose = new Pose({
+            locateFile: (file) => {
+                return `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`;
+            }
+        });
+
+        this.pose.setOptions({
+            modelComplexity: 1,
+            smoothLandmarks: true,
+            minDetectionConfidence: 0.5,
+            minTrackingConfidence: 0.5
+        });
+
+        this.pose.onResults(this.onPoseResults.bind(this));
+    }
+
+    setupEventListeners() {
+        document.getElementById('startBtn').addEventListener('click', () => this.startCamera());
+        document.getElementById('stopBtn').addEventListener('click', () => this.stopCamera());
+        document.getElementById('exerciseSelect').addEventListener('change', (e) => {
+            this.currentExercise = e.target.value;
+            this.repCount = 0;
+            this.updateRepCounter();
+        });
+    }
+
+    async startCamera() {
+        try {
+            // Get camera access
+            const stream = await navigator.mediaDevices.getUserMedia({ 
+                video: { 
+                    width: 640, 
+                    height: 480,
+                    facingMode: 'user' 
+                } 
+            });
+            
+            this.video.srcObject = stream;
+            this.isActive = true;
+            
+            // Wait for video to load
+            this.video.onloadedmetadata = () => {
+                this.video.play();
+                this.processVideo();
+            };
+            
+            console.log("Camera started successfully!");
+            
+        } catch (error) {
+            console.error("Camera error:", error);
+            alert("Cannot access camera. Please check permissions and try again.");
+        }
+    }
+
+    stopCamera() {
+        if (this.video.srcObject) {
+            const tracks = this.video.srcObject.getTracks();
+            tracks.forEach(track => track.stop());
+            this.video.srcObject = null;
+        }
+        this.isActive = false;
+    }
+
+    async processVideo() {
+        if (!this.isActive) return;
+        
+        // Process each frame
+        if (this.video.readyState === this.video.HAVE_ENOUGH_DATA) {
+            // Draw video frame to canvas
+            this.ctx.drawImage(this.video, 0, 0, this.canvas.width, this.canvas.height);
+            
+            // Process with MediaPipe
+            await this.pose.send({image: this.canvas});
+        }
+        
+        // Continue processing
+        if (this.isActive) {
+            requestAnimationFrame(() => this.processVideo());
+        }
+    }
+
+    onPoseResults(results) {
+        // Clear canvas and draw video frame
+        this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+        this.ctx.drawImage(this.video, 0, 0, this.canvas.width, this.canvas.height);
+        
+        // Draw pose landmarks
+        if (results.poseLandmarks) {
+            this.drawLandmarks(results.poseLandmarks);
+            this.analyzeForm(results.poseLandmarks);
+        }
+    }
+
+    drawLandmarks(landmarks) {
+        // Draw connections
+        const connections = POSE_CONNECTIONS;
+        this.ctx.strokeStyle = '#00FF00';
+        this.ctx.lineWidth = 2;
+        
+        connections.forEach(([start, end]) => {
+            const startPoint = landmarks[start];
+            const endPoint = landmarks[end];
+            
+            if (startPoint.visibility > 0.5 && endPoint.visibility > 0.5) {
+                this.ctx.beginPath();
+                this.ctx.moveTo(
+                    startPoint.x * this.canvas.width, 
+                    startPoint.y * this.canvas.height
+                );
+                this.ctx.lineTo(
+                    endPoint.x * this.canvas.width, 
+                    endPoint.y * this.canvas.height
+                );
+                this.ctx.stroke();
+            }
+        });
+
+        // Draw landmarks
+        this.ctx.fillStyle = '#FF0000';
+        landmarks.forEach(landmark => {
+            if (landmark.visibility > 0.5) {
+                this.ctx.beginPath();
+                this.ctx.arc(
+                    landmark.x * this.canvas.width,
+                    landmark.y * this.canvas.height,
+                    3, 0, 2 * Math.PI
+                );
+                this.ctx.fill();
+            }
+        });
+    }
+
+    // ... rest of the analysis methods remain the same
+    analyzeForm(landmarks) {
+        const feedbackElement = document.getElementById('feedbackText');
+        
+        switch(this.currentExercise) {
+            case 'squat':
+                this.analyzeSquat(landmarks, feedbackElement);
+                break;
+            case 'pushup':
+                this.analyzePushup(landmarks, feedbackElement);
+                break;
+            case 'bicep':
+                this.analyzeBicepCurl(landmarks, feedbackElement);
+                break;
+            case 'shoulder':
+                this.analyzeShoulderPress(landmarks, feedbackElement);
+                break;
+        }
+        
+        this.updateAngleDisplay(landmarks);
+    }
+
+    analyzeSquat(landmarks, feedbackElement) {
+        const hip = landmarks[24];  // Right hip
+        const knee = landmarks[26]; // Right knee
+        const ankle = landmarks[28]; // Right ankle
+        
+        if (!hip || !knee || !ankle) return;
+
+        const kneeAngle = this.calculateAngle(hip, knee, ankle);
+        
+        if (kneeAngle < 90 && this.lastPosture !== 'bottom') {
+            this.repCount++;
+            this.updateRepCounter();
+            this.lastPosture = 'bottom';
+            feedbackElement.textContent = "Good depth! Push up now.";
+            feedbackElement.className = 'good';
+        } else if (kneeAngle > 160 && this.lastPosture !== 'top') {
+            this.lastPosture = 'top';
+            feedbackElement.textContent = "Ready for next rep. Go deeper!";
+            feedbackElement.className = '';
+        }
+        
+        if (kneeAngle < 70) {
+            feedbackElement.textContent = "Too deep! Maintain 90° angle";
+            feedbackElement.className = 'warning';
+        }
+    }
+
+    calculateAngle(a, b, c) {
+        const ab = [b.x - a.x, b.y - a.y];
+        const cb = [b.x - c.x, b.y - c.y];
+        
+        const dot = ab[0] * cb[0] + ab[1] * cb[1];
+        const magAB = Math.sqrt(ab[0] * ab[0] + ab[1] * ab[1]);
+        const magCB = Math.sqrt(cb[0] * cb[0] + cb[1] * cb[1]);
+        
+        const angle = Math.acos(dot / (magAB * magCB)) * (180 / Math.PI);
+        return angle;
+    }
+
+    updateRepCounter() {
+        document.getElementById('repCounter').textContent = `Reps: ${this.repCount}`;
+    }
+
+    updateAngleDisplay(landmarks) {
+        const angleElement = document.getElementById('angleDisplay');
+        
+        if (this.currentExercise === 'squat') {
+            const hip = landmarks[24], knee = landmarks[26], ankle = landmarks[28];
+            if (hip && knee && ankle) {
+                const kneeAngle = this.calculateAngle(hip, knee, ankle);
+                angleElement.textContent = `Knee Angle: ${Math.round(kneeAngle)}°`;
+            }
+        }
+    }
+}
+
+// Add POSE_CONNECTIONS if not available
+const POSE_CONNECTIONS = [
+    [0, 1], [1, 2], [2, 3], [3, 7], [0, 4], [4, 5], [5, 6], [6, 8],
+    [9, 10], [11, 12], [11, 13], [13, 15], [12, 14], [14, 16],
+    [11, 23], [12, 24], [23, 24], [23, 25], [24, 26], [25, 27],
+    [26, 28], [27, 29], [28, 30], [29, 31], [30, 32]
+];
+
+// Initialize when page loads
+window.addEventListener('DOMContentLoaded', () => {
+    new GymTrainer();
+});
